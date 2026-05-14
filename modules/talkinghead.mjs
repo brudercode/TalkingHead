@@ -1198,8 +1198,7 @@ class TalkingHead {
     let gltf = await loader.loadAsync( avatar.url, onprogress );
 
     // Check the gltf
-    const required = [ this.opt.modelRoot ];
-    this.posePropNames.forEach( x => required.push( x.split('.')[0] ) );
+    const required = [ this.opt.modelRoot, 'Head', 'Neck' ];
     required.forEach( x => {
       if ( !gltf.scene.getObjectByName(x) ) {
         throw new Error('Avatar object ' + x + ' not found');
@@ -1307,27 +1306,30 @@ class TalkingHead {
     this.posePropNames.forEach( x => {
       const ids = x.split('.');
       const o = this.armature.getObjectByName(ids[0]);
-      this.poseAvatar.props[x] = o[ids[1]];
-      if ( this.poseBase.props.hasOwnProperty(x) ) {
-        this.poseAvatar.props[x].copy( this.poseBase.props[x] );
-      } else {
-        this.poseBase.props[x] = this.poseAvatar.props[x].clone();
-      }
+      if ( o ) {
+        this.poseAvatar.props[x] = o[ids[1]];
+        if ( this.poseBase.props.hasOwnProperty(x) ) {
+          this.poseAvatar.props[x].copy( this.poseBase.props[x] );
+        } else {
+          this.poseBase.props[x] = this.poseAvatar.props[x].clone();
+        }
 
-      // Make sure the target has the delta properties, because we need it as a basis
-      if ( this.poseDelta.props.hasOwnProperty(x) && !this.poseTarget.props.hasOwnProperty(x) ) {
-        this.poseTarget.props[x] = this.poseAvatar.props[x].clone();
-      }
+        // Make sure the target has the delta properties, because we need it as a basis
+        if ( this.poseDelta.props.hasOwnProperty(x) && !this.poseTarget.props.hasOwnProperty(x) ) {
+          this.poseTarget.props[x] = this.poseAvatar.props[x].clone();
+        }
 
-      // Take target pose
-      this.poseTarget.props[x].t = this.animClock;
-      this.poseTarget.props[x].d = 2000;
+        // Take target pose
+        this.poseTarget.props[x].t = this.animClock;
+        this.poseTarget.props[x].d = 2000;
+      }
     });
 
     // Reset IK bone positions
     this.ikMesh.traverse( x => {
       if (x.isBone) {
-        x.position.copy( this.armature.getObjectByName(x.name).position );
+        const o = this.armature.getObjectByName(x.name);
+        if ( o ) x.position.copy( o.position );
       }
     });
 
@@ -1367,10 +1369,15 @@ class TalkingHead {
     this.objectHead = this.armature.getObjectByName('Head');
     this.objectNeck = this.armature.getObjectByName('Neck');
 
-    // Estimate avatar height based on eye level
+    // Estimate avatar height based on eye level or head position
     const plEye = new THREE.Vector3();
-    this.objectLeftEye.getWorldPosition(plEye);
-    this.avatarHeight = plEye.y + 0.2;
+    if ( this.objectLeftEye ) {
+      this.objectLeftEye.getWorldPosition(plEye);
+      this.avatarHeight = plEye.y + 0.2;
+    } else {
+      this.objectHead.getWorldPosition(plEye);
+      this.avatarHeight = plEye.y + 0.1;
+    }
 
     // Set pose, view and start animation
     if ( !this.viewName ) this.setView( this.opt.cameraView );
@@ -1555,13 +1562,15 @@ class TalkingHead {
   updatePoseDelta() {
     for( const [key,d] of Object.entries(this.poseDelta.props) ) {
       if ( d.x === 0 && d.y === 0 && d.z === 0 ) continue;
-      e.set(d.x,d.y,d.z);
       const o = this.poseAvatar.props[key];
-      if ( o.isQuaternion ) {
-        q.setFromEuler(e);
-        o.multiply(q);
-      } else if ( o.isVector3 ) {
-        o.add( e );
+      if ( o ) {
+        e.set(d.x,d.y,d.z);
+        if ( o.isQuaternion ) {
+          q.setFromEuler(e);
+          o.multiply(q);
+        } else if ( o.isVector3 ) {
+          o.add( e );
+        }
       }
     }
   }
@@ -2557,7 +2566,7 @@ class TalkingHead {
     }
 
     // Eye contact
-    if ( isEyeContact || isHeadMove ) {
+    if ( (isEyeContact || isHeadMove) && this.poseAvatar.props['Head.quaternion'] ) {
 
       // Get head position
       e.setFromQuaternion( this.poseAvatar.props['Head.quaternion'] );
@@ -2645,14 +2654,16 @@ class TalkingHead {
     }
 
     // Hip-feet balance
-    box.setFromObject( this.armature );
-    this.objectLeftToeBase.getWorldPosition(v);
-    v.sub(this.armature.position);
-    this.objectRightToeBase.getWorldPosition(w);
-    w.sub(this.armature.position);
-    this.objectHips.position.y -= box.min.y / 2;
-    this.objectHips.position.x -= (v.x+w.x)/4;
-    this.objectHips.position.z -= (v.z+w.z)/2;
+    if ( this.objectLeftToeBase && this.objectRightToeBase && this.objectHips ) {
+      box.setFromObject( this.armature );
+      this.objectLeftToeBase.getWorldPosition(v);
+      v.sub(this.armature.position);
+      this.objectRightToeBase.getWorldPosition(w);
+      w.sub(this.armature.position);
+      this.objectHips.position.y -= box.min.y / 2;
+      this.objectHips.position.x -= (v.x+w.x)/4;
+      this.objectHips.position.z -= (v.z+w.z)/2;
+    }
 
     // Update Dynamic Bones
     this.dynamicbones.update(dt);
@@ -3872,18 +3883,21 @@ class TalkingHead {
     // TODO: Improve the logic, if possible
 
     // Eyes position and head world rotation
-    this.objectLeftEye.updateMatrixWorld(true);
-    this.objectRightEye.updateMatrixWorld(true);
-    v.setFromMatrixPosition(this.objectLeftEye.matrixWorld);
-    w.setFromMatrixPosition(this.objectRightEye.matrixWorld);
-    v.add(w).divideScalar( 2 );
+    if ( this.objectLeftEye && this.objectRightEye ) {
+      this.objectLeftEye.updateMatrixWorld(true);
+      this.objectRightEye.updateMatrixWorld(true);
+      v.setFromMatrixPosition(this.objectLeftEye.matrixWorld);
+      w.setFromMatrixPosition(this.objectRightEye.matrixWorld);
+      v.add(w).divideScalar( 2 );
+    } else {
+      this.objectHead.updateMatrixWorld(true);
+      v.setFromMatrixPosition(this.objectHead.matrixWorld);
+    }
     q.copy( this.armature.quaternion );
-    q.multiply( this.poseTarget.props['Hips.quaternion'] );
-    q.multiply( this.poseTarget.props['Spine.quaternion'] );
-    q.multiply( this.poseTarget.props['Spine1.quaternion'] );
-    q.multiply( this.poseTarget.props['Spine2.quaternion'] );
-    q.multiply( this.poseTarget.props['Neck.quaternion'] );
-    q.multiply( this.poseTarget.props['Head.quaternion'] );
+    [ 'Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head' ].forEach( x => {
+      const p = this.poseTarget.props[x + '.quaternion'];
+      if ( p ) q.multiply( p );
+    });
 
     // Direction from object to speakto target
     const dir = new THREE.Vector3().subVectors(target, v).normalize();
@@ -3951,11 +3965,17 @@ class TalkingHead {
 
     // Eyes position
     const rect = this.nodeAvatar.getBoundingClientRect();
-    this.objectLeftEye.updateMatrixWorld(true);
-    this.objectRightEye.updateMatrixWorld(true);
-    const plEye = new THREE.Vector3().setFromMatrixPosition(this.objectLeftEye.matrixWorld);
-    const prEye = new THREE.Vector3().setFromMatrixPosition(this.objectRightEye.matrixWorld);
-    const pEyes = new THREE.Vector3().addVectors( plEye, prEye ).divideScalar( 2 );
+    const pEyes = new THREE.Vector3();
+    if ( this.objectLeftEye && this.objectRightEye ) {
+      this.objectLeftEye.updateMatrixWorld(true);
+      this.objectRightEye.updateMatrixWorld(true);
+      const plEye = new THREE.Vector3().setFromMatrixPosition(this.objectLeftEye.matrixWorld);
+      const prEye = new THREE.Vector3().setFromMatrixPosition(this.objectRightEye.matrixWorld);
+      pEyes.addVectors( plEye, prEye ).divideScalar( 2 );
+    } else {
+      this.objectHead.updateMatrixWorld(true);
+      pEyes.setFromMatrixPosition(this.objectHead.matrixWorld);
+    }
 
     pEyes.project(this.camera);
     let eyesx = (pEyes.x + 1) / 2 * rect.width + rect.left;
