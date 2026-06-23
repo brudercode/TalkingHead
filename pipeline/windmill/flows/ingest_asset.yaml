@@ -1,0 +1,195 @@
+summary: "Ingest new 3D asset into registry"
+description: |
+  Scans a file or directory for GLB files, calculates hashes,
+  checks for duplicates, and creates registry entries.
+
+value:
+  modules:
+    - id: scan_files
+      value:
+        type: script
+        language: python3
+        content: |
+          import os
+          from pathlib import Path
+
+          def main(source_path: str):
+              """Scan for GLB files"""
+              path = Path(source_path)
+
+              if path.is_file():
+                  if path.suffix.lower() == '.glb':
+                      return [{"path": str(path), "name": path.name}]
+                  else:
+                      raise Exception(f"Not a GLB file: {source_path}")
+
+              # Scan directory
+              glb_files = list(path.glob('**/*.glb'))
+              return [{"path": str(f), "name": f.name} for f in glb_files]
+        input_transforms:
+          source_path:
+            type: javascript
+            expr: flow_input.source_path
+
+    - id: ingest_each
+      value:
+        type: forloop
+        iterator:
+          type: javascript
+          expr: results.scan_files
+        modules:
+          - id: calculate_hash
+            value:
+              type: script
+              language: python3
+              content: |
+                import hashlib
+                import os
+
+                def main(file_path: str):
+                    """Calculate SHA-256 hash"""
+                    sha256 = hashlib.sha256()
+                    with open(file_path, 'rb') as f:
+                        for chunk in iter(lambda: f.read(8192), b''):
+                            sha256.update(chunk)
+
+                    return {
+                        "hash": sha256.hexdigest(),
+                        "size": os.path.getsize(file_path)
+                    }
+              input_transforms:
+                file_path:
+                  type: javascript
+                  expr: iter.value.path
+
+          - id: check_duplicate
+            value:
+              type: script
+              language: python3
+              content: |
+                import sqlite3
+
+                def main(file_hash: str, registry_db: str):
+                    """Check if hash already exists"""
+                    conn = sqlite3.connect(registry_db)
+                    conn.row_factory = sqlite3.Row
+
+                    cur = conn.execute(
+                        "SELECT asset_id, source_path, state FROM assets WHERE file_hash = ?",
+                        (file_hash,)
+                    )
+                    existing = cur.fetchone()
+                    conn.close()
+
+                    if existing:
+                        return {
+                            "is_duplicate": True,
+                            "existing_asset_id": existing["asset_id"],
+                            "existing_path": existing["source_path"],
+                            "state": existing["state"]
+                        }
+
+                    return {"is_duplicate": False}
+              input_transforms:
+                file_hash:
+                  type: javascript
+                  expr: results.calculate_hash.hash
+                registry_db:
+                  type: javascript
+                  expr: variable.REGISTRY_DB
+
+          - id: create_entry
+            value:
+              type: script
+              language: python3
+              content: |
+                import sqlite3
+                import uuid
+
+                def main(
+                    is_duplicate: bool,
+                    file_path: str,
+                    file_hash: str,
+                    file_size: int,
+                    identity_id: str,
+                    source_tool: str,
+                    registry_db: str
+                ):
+                    """Create registry entry if not duplicate"""
+                    if is_duplicate:
+                        return {"status": "skipped", "reason": "duplicate"}
+
+                    asset_id = str(uuid.uuid4())
+
+                    conn = sqlite3.connect(registry_db)
+
+                    # Insert asset
+                    conn.execute(
+                        """INSERT INTO assets
+                           (asset_id, identity_id, source_tool, source_path, file_hash, file_size)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (asset_id, identity_id, source_tool, file_path, file_hash, file_size)
+                    )
+
+                    # Log workflow
+                    conn.execute(
+                        """INSERT INTO workflows (asset_id, to_state, operator, notes)
+                           VALUES (?, 'pending', 'windmill', 'Auto-ingested')""",
+                        (asset_id,)
+                    )
+
+                    conn.commit()
+                    conn.close()
+
+                    return {
+                        "status": "ingested",
+                        "asset_id": asset_id,
+                        "file_path": file_path
+                    }
+              input_transforms:
+                is_duplicate:
+                  type: javascript
+                  expr: results.check_duplicate.is_duplicate
+                file_path:
+                  type: javascript
+                  expr: iter.value.path
+                file_hash:
+                  type: javascript
+                  expr: results.calculate_hash.hash
+                file_size:
+                  type: javascript
+                  expr: results.calculate_hash.size
+                identity_id:
+                  type: javascript
+                  expr: flow_input.identity_id
+                source_tool:
+                  type: javascript
+                  expr: flow_input.source_tool || 'manual'
+                registry_db:
+                  type: javascript
+                  expr: variable.REGISTRY_DB
+
+    - id: summary
+      value:
+        type: script
+        language: python3
+        content: |
+          def main(results: list):
+              """Summarize ingestion results"""
+              ingested = sum(1 for r in results if r.get('status') == 'ingested')
+              skipped = sum(1 for r in results if r.get('status') == 'skipped')
+
+              print(f"✅ Ingestion complete:")
+              print(f"   Ingested: {ingested}")
+              print(f"   Skipped (duplicates): {skipped}")
+
+              return {
+                  "total": len(results),
+                  "ingested": ingested,
+                  "skipped": skipped,
+                  "details": results
+              }
+        input_transforms:
+          results:
+            type: javascript
+            expr: results.ingest_each.map(r => r.create_entry)

@@ -98,6 +98,48 @@ Single Sign-On (SSO) functionality, give the class your TTS proxy endpoint and
 a function from which to obtain the JSON Web Token needed to use that proxy.
 Refer to Appendix B for one way to implement JWT SSO.
 
+---
+
+### EcoChiefs Oracle Integration
+
+This repository includes a complete asset pipeline and oracle interface implementation
+that demonstrates TalkingHead in a production-ready application.
+
+**EcoChiefs Oracle** is a token-gated wisdom system featuring animated 3D character
+avatars powered by TalkingHead. The pipeline manages 3D assets from creation through
+AI refinement to publication in an interactive web interface.
+
+**Key Components:**
+
+- **Asset Registry** (`pipeline/registry/`) - SQLite database + Python CLI for tracking
+  3D assets through their lifecycle (pending → refining → approved → published)
+
+- **Windmill Flows** (`pipeline/windmill/`) - Workflow orchestration for ingestion,
+  ComfyUI refinement, QA approval, and publication to web
+
+- **TaurusAvatarStage** (`eco-chiefs-oracle/src/lib/card/taurusSdk.js`) - Integration
+  layer that wraps TalkingHead for the oracle interface
+
+- **Oracle UI** (`eco-chiefs-oracle/index.html`) - Beautiful browser-based interface
+  where users can consult with animated EcoChiefs characters
+
+**Quick Start:**
+
+```bash
+# Initialize the asset registry
+cd pipeline/registry
+python3 registry.py init
+
+# Ingest 3D models (GLB files)
+python3 registry.py ingest ../../assets/3d --identity ecochief.taurus --tool meshy
+
+# See full pipeline documentation
+cat ../README.md
+```
+
+See `pipeline/README.md` for complete documentation on the asset pipeline,
+Windmill setup, ComfyUI integration, and production deployment.
+
 ```javascript
 import { TalkingHead } from "talkinghead";
 

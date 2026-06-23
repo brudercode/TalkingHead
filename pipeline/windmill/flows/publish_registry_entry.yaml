@@ -1,0 +1,155 @@
+summary: "Publish approved asset to web and bind to ArchCard"
+description: |
+  Takes an approved asset from the registry, copies the GLB to the public assets directory,
+  and creates a card binding for the EcoChiefs Oracle interface.
+
+value:
+  modules:
+    - id: validate_asset
+      value:
+        type: script
+        language: python3
+        content: |
+          import sqlite3
+
+          def main(asset_id: str, registry_db: str):
+              """Validate asset is approved and ready for publication"""
+              conn = sqlite3.connect(registry_db)
+              conn.row_factory = sqlite3.Row
+
+              cur = conn.execute(
+                  "SELECT * FROM assets WHERE asset_id = ? AND state = 'approved'",
+                  (asset_id,)
+              )
+              asset = cur.fetchone()
+              conn.close()
+
+              if not asset:
+                  raise Exception(f"Asset {asset_id} not found or not approved")
+
+              return {
+                  "asset_id": asset["asset_id"],
+                  "identity_id": asset["identity_id"],
+                  "source_path": asset["source_path"],
+                  "file_hash": asset["file_hash"]
+              }
+        input_transforms:
+          asset_id:
+            type: javascript
+            expr: flow_input.asset_id
+          registry_db:
+            type: javascript
+            expr: variable.REGISTRY_DB
+
+    - id: copy_to_web
+      value:
+        type: script
+        language: bash
+        content: |
+          #!/bin/bash
+          set -e
+
+          IDENTITY_NAME=$(echo "$IDENTITY_ID" | cut -d'.' -f2)
+          TARGET_DIR="$WEB_ASSETS_ROOT/$IDENTITY_NAME"
+          TARGET_FILE="$TARGET_DIR/${IDENTITY_NAME}-meshy-v1.glb"
+
+          # Create target directory
+          mkdir -p "$TARGET_DIR"
+
+          # Copy GLB file
+          cp "$SOURCE_PATH" "$TARGET_FILE"
+
+          echo "✅ Copied to $TARGET_FILE"
+          echo "$TARGET_FILE"
+        input_transforms:
+          SOURCE_PATH:
+            type: javascript
+            expr: results.validate_asset.source_path
+          IDENTITY_ID:
+            type: javascript
+            expr: results.validate_asset.identity_id
+          WEB_ASSETS_ROOT:
+            type: javascript
+            expr: variable.WEB_ASSETS_ROOT
+
+    - id: update_registry
+      value:
+        type: script
+        language: python3
+        content: |
+          import sqlite3
+
+          def main(
+              asset_id: str,
+              identity_id: str,
+              web_path: str,
+              slot: str,
+              registry_db: str
+          ):
+              """Update registry with publication and binding"""
+              conn = sqlite3.connect(registry_db)
+
+              # Update asset state to published
+              conn.execute(
+                  "UPDATE assets SET state = 'published', updated_at = CURRENT_TIMESTAMP WHERE asset_id = ?",
+                  (asset_id,)
+              )
+
+              # Log workflow
+              conn.execute(
+                  """INSERT INTO workflows (asset_id, from_state, to_state, operator, notes)
+                     VALUES (?, 'approved', 'published', 'windmill', ?)""",
+                  (asset_id, f"Published to {web_path}")
+              )
+
+              # Create card binding
+              conn.execute(
+                  """INSERT INTO card_bindings
+                     (asset_id, identity_id, slot, web_path, is_canonical)
+                     VALUES (?, ?, ?, ?, 1)""",
+                  (asset_id, identity_id, slot, web_path)
+              )
+
+              conn.commit()
+              conn.close()
+
+              return {
+                  "status": "published",
+                  "asset_id": asset_id,
+                  "web_path": web_path,
+                  "binding_slot": slot
+              }
+        input_transforms:
+          asset_id:
+            type: javascript
+            expr: results.validate_asset.asset_id
+          identity_id:
+            type: javascript
+            expr: results.validate_asset.identity_id
+          web_path:
+            type: javascript
+            expr: |
+              const identity = results.validate_asset.identity_id.split('.').pop();
+              `/assets/${identity}/${identity}-meshy-v1.glb`
+          slot:
+            type: javascript
+            expr: flow_input.slot || 'avatar3d'
+          registry_db:
+            type: javascript
+            expr: variable.REGISTRY_DB
+
+    - id: result
+      value:
+        type: script
+        language: python3
+        content: |
+          def main(result: dict):
+              """Return final result"""
+              print(f"✅ Published {result['asset_id']}")
+              print(f"   Web path: {result['web_path']}")
+              print(f"   Slot: {result['binding_slot']}")
+              return result
+        input_transforms:
+          result:
+            type: javascript
+            expr: results.update_registry

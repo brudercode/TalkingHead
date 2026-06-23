@@ -1,0 +1,53 @@
+{
+  "description": "Generate PBR texture candidate for 3D model using ControlNet",
+  "nodes": {
+    "load_image": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "source_portrait.png"
+      }
+    },
+    "controlnet_depth": {
+      "class_type": "ControlNetApply",
+      "inputs": {
+        "conditioning": ["text_encode", 0],
+        "control_net": ["load_controlnet_depth", 0],
+        "image": ["depth_estimator", 0]
+      }
+    },
+    "text_encode": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "professional character texture, detailed skin, high quality PBR material",
+        "clip": ["load_checkpoint", 1]
+      }
+    },
+    "ksampler": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["load_checkpoint", 0],
+        "seed": 42,
+        "steps": 30,
+        "cfg": 7.5,
+        "sampler_name": "euler_a",
+        "scheduler": "normal",
+        "denoise": 0.85,
+        "positive": ["controlnet_depth", 0],
+        "negative": ["negative_encode", 0],
+        "latent_image": ["empty_latent", 0]
+      }
+    },
+    "save_image": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": ["vae_decode", 0],
+        "filename_prefix": "texture_candidate"
+      }
+    }
+  },
+  "metadata": {
+    "tool": "comfyui",
+    "version": "1.0",
+    "created_by": "pipeline"
+  }
+}
